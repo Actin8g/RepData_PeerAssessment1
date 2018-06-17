@@ -1,0 +1,139 @@
+---
+title: "Analysis of Daily Walking Data"
+author: "Alex Chertok"
+date: "June 16, 2018"
+output: html_document
+keep_md: true
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, error = FALSE, warning = FALSE, message = FALSE, options(scipen = 10), fig.path='Figs/')
+```
+
+## Code for reading in the dataset and processing the data
+```{r}
+require(data.table)
+require(lubridate)
+require(dplyr)
+require(ggplot2)
+
+temp <- tempfile()
+download.file("https://d396qusza40orc.cloudfront.net/repdata%2Fdata%2Factivity.zip", temp)
+activity <- fread(unzip(temp, files = "activity.csv"))
+rm(temp)
+
+activity<-as_tibble(activity)
+
+# convert dates to a usable format
+activity <- activity %>%
+  mutate(date = ymd(date)) %>%
+  group_by(date)
+```
+
+## Histogram of the total number of steps taken each day
+
+```{r histogram_notNA}
+# Mean total steps per day
+dailySteps <- summarize(activity, dsum = sum(steps, na.rm = T))
+dailyStepsNZ <- dailySteps[dailySteps$dsum != 0, "dsum"] # only days with data
+
+# Plot a histogram of number of steps per day for days that have data
+ggplot(data = dailyStepsNZ, aes(x = dsum)) +
+  scale_y_continuous(breaks=1:10) +
+  geom_histogram(binwidth = 1000) +
+  labs(title = "Histogram of Daily Step Totals", x = "Number of Steps", y = "Frequency (days)")
+
+avgDailySteps <- mean(dailyStepsNZ[[1]])
+medDailySteps <- median(dailyStepsNZ[[1]])
+```
+
+## Mean and median number of steps taken each day
+
+```{r}
+avgDailySteps <- mean(dailyStepsNZ[[1]])
+medDailySteps <- median(dailyStepsNZ[[1]])
+```
+
+Daily mean: `r round(avgDailySteps, 0)`  
+Daily median: `r round(medDailySteps, 0)`
+
+## Time series plot of the average number of steps taken
+```{r plotByInterval}
+activityByInt <- activity %>%
+  group_by(interval)
+
+intervalSteps <- summarize(activityByInt, intMean = mean(steps, na.rm = T))
+
+ggplot(data = intervalSteps, aes(x = interval, y = intMean)) +
+  geom_smooth(method = "lm", se = F) +
+  geom_point() +
+  labs(title = "Average Number of Steps by Interval", x = "Interval", y = "Average Number of Steps")
+```
+
+## The 5-minute interval that, on average, contains the maximum number of steps
+
+```{r}
+maxStepsByInt <- max(intervalSteps$intMean) # Highest mean of all intervals
+maxInt <- intervalSteps$interval[which(maxStepsByInt == intervalSteps$intMean)] # Interval with highest mean
+```
+
+The interval with the highest average number of steps is interval `r maxInt`.
+
+## Code to describe and show a strategy for imputing missing data
+
+``` {r}
+# Number of missing values by day
+NAsByDay <- summarize(activity, NAs = sum((is.na(steps))))
+table(NAsByDay$NAs) # 53 days have no NAs, 8 days have only NAs
+```
+
+Since all days have either no missing values or only missing values (as there are 288 5-minute intervals in a day), we have to impute by interval. For every interval in each day with missing data, I will set the number of steps to the average for that interval in the days that have data.
+
+``` {r}
+# The dates with missing data
+missingDays <-NAsByDay$date[which(NAsByDay$NAs!=0)]
+
+# Setting the values to the average by interval for each of the 8 days with missing data
+imputedValues <- activity %>% filter(date %in% missingDays) %>%
+  group_by(interval) %>%
+  mutate(steps = intervalSteps[intervalSteps$interval==interval,]$intMean) %>%
+  ungroup()
+
+# Combine the imputed values with the exisitng values in the activity dataset
+recombinedActivity <- activity 
+recombinedActivity[recombinedActivity$date %in% missingDays,]$steps <- imputedValues$steps
+```
+
+Histogram of the total number of steps taken each day after missing values are imputed
+
+```{r histogram_allDays}
+dailyStepsRecombined <- recombinedActivity %>%  
+  group_by(date) %>%
+  summarize(dsum = sum(steps))
+
+# Plot a histogram of number of steps per day for all days
+ggplot(data = dailyStepsRecombined, aes(x = dsum, fill = date %in% missingDays)) +
+  geom_histogram(binwidth = 1000) +
+  labs(title = "Histogram of Daily Step Totals with Imputed Values", x = "Number of Steps", y = "Frequency (days)") +
+  scale_fill_discrete(name="Imputed data?")
+```
+
+The histogram shows that the imputed data in ni the middle of the distribution, so imputing in this manner effectively reduces the apparent variance and increases the apparent concentration the distribution near the mean.
+
+## Panel plot comparing the average number of steps taken per 5-minute interval across weekdays and weekends
+
+``` {r Wkend_wkday_plot}
+recombinedActivity <- recombinedActivity %>% mutate(wkday = wday(date) %in% c(6,7)) 
+recombinedActivity$wkday <- factor(recombinedActivity$wkday, labels = c('Weekday', "Weekend"))
+
+wkdayMeans <- recombinedActivity %>% group_by(wkday, interval) %>%
+  summarize(intMean = mean(steps))
+
+# plot average steps by interval forr weekends and weekdays
+ggplot(data = wkdayMeans, aes(x = interval, y = intMean)) +
+  geom_smooth(method = "lm", se = F) +
+  geom_point() +
+  labs(title = "Average Number of Steps by Interval", x = "Interval", y = "Average Number of Steps") +
+  facet_wrap( ~ wkday)
+```
